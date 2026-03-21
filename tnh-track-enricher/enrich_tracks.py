@@ -14,6 +14,7 @@ import re
 import time
 import traceback
 from datetime import date, datetime, timezone
+from urllib.parse import unquote
 
 import requests
 import librosa
@@ -95,8 +96,8 @@ def filename_matches(filename: str, isrc: str) -> bool:
 
 
 def extract_dropbox_filename(url: str) -> str:
-    """Extract filename from Dropbox share URL path (before query string)."""
-    return url.split("?")[0].rstrip("/").split("/")[-1]
+    """Extract filename from Dropbox share URL path (before query string), URL-decoded."""
+    return unquote(url.split("?")[0].rstrip("/").split("/")[-1])
 
 
 def dropbox_direct_url(url: str) -> str:

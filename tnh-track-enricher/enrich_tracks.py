@@ -46,7 +46,6 @@ log = logging.getLogger(__name__)
 # ── State ─────────────────────────────────────────────────────────────────────
 
 _failed_ids: set[str] = set()
-_artist_cache: dict[str, str] = {}
 
 # ── Pure functions ────────────────────────────────────────────────────────────
 
@@ -71,20 +70,18 @@ def _slugify(text: str) -> str:
 
 def build_proposed_filename(
     isrc: str,
-    artist_names: list[str],
     track_title: str,
     version: list[str],
     original_filename: str,
 ) -> str:
     ext = ("." + original_filename.rsplit(".", 1)[-1]) if "." in original_filename else ""
     isrc_slug = _strip_isrc_hyphens(isrc)
-    artist_slug = _slugify(" x ".join(artist_names))
     track_slug = _slugify(track_title)
 
     if version:
         version_slug = version[0].replace(" ", "-")
-        return f"{isrc_slug}_{artist_slug}_{track_slug}_{version_slug}{ext}"
-    return f"{isrc_slug}_{artist_slug}_{track_slug}{ext}"
+        return f"{isrc_slug}_{track_slug}_{version_slug}{ext}"
+    return f"{isrc_slug}_{track_slug}{ext}"
 
 
 def filename_matches(filename: str, isrc: str) -> bool:
@@ -141,32 +138,6 @@ def post_notion_comment(page_id: str, message: str) -> None:
         log.warning("Failed to post Notion comment to %s:\n%s", page_id, traceback.format_exc())
 
 
-def get_artist_name(page_url: str) -> str:
-    """Fetch artist name from a Notion artist page (uses cache)."""
-    if page_url in _artist_cache:
-        return _artist_cache[page_url]
-
-    # Extract bare page ID from URL: last path segment, remove slug prefix
-    page_id = page_url.rstrip("/").split("/")[-1].split("?")[0]
-    if "-" in page_id:
-        page_id = page_id.split("-")[-1]
-
-    data = _notion_sleep_get(f"https://api.notion.com/v1/pages/{page_id}")
-    props = data.get("properties", {})
-
-    # Artist name is in the "artist" rich_text property, NOT the page title
-    rich_text = props.get("artist", {}).get("rich_text", [])
-    name = "".join(t.get("plain_text", "") for t in rich_text).strip()
-
-    if not name:
-        # Fallback to title only if artist property is empty
-        title_parts = props.get("Name", props.get("title", {})).get("title", [])
-        name = "".join(t.get("plain_text", "") for t in title_parts).strip() or "Unknown"
-        log.warning("Artist property empty for %s, fell back to title: %s", page_url, name)
-
-    _artist_cache[page_url] = name
-    return name
-
 
 def query_tracks() -> list[dict]:
     """Query Notion for tracks needing enrichment. Server-side filter + paginated."""
@@ -220,10 +191,6 @@ def extract_track_fields(page: dict) -> dict:
         "duration":    rich_text("duration"),
         "master":      (props.get("master", {}).get("url") or "").strip(),
         "version":     [o["name"] for o in props.get("version", {}).get("multi_select", [])],
-        "artist_urls": [
-            f"https://www.notion.so/{r['id'].replace('-', '')}"
-            for r in props.get("artist(s)", {}).get("relation", [])
-        ],
     }
 
 
@@ -274,14 +241,6 @@ def process_track(track: dict) -> None:
     name = track["track"] or track["page_id"]
     log.info("── %s | ISRC: %s", name, track["isrc"])
 
-    # Resolve artist names
-    artist_names: list[str] = []
-    for url in track["artist_urls"]:
-        try:
-            artist_names.append(get_artist_name(url))
-        except Exception:
-            log.warning("Could not resolve artist %s:\n%s", url, traceback.format_exc())
-
     original_filename = extract_dropbox_filename(track["master"])
     local_path = None
 
@@ -293,7 +252,7 @@ def process_track(track: dict) -> None:
 
         # Filename proposal (log only — no API calls)
         proposed = build_proposed_filename(
-            track["isrc"], artist_names, track["track"], track["version"], original_filename
+            track["isrc"], track["track"], track["version"], original_filename
         )
         if filename_matches(original_filename, track["isrc"]):
             log.info("Filename OK — no rename needed: %s", original_filename)
@@ -312,9 +271,6 @@ def process_track(track: dict) -> None:
 # ── Poll cycle ────────────────────────────────────────────────────────────────
 
 def poll_cycle() -> None:
-    global _artist_cache
-    _artist_cache = {}
-
     log.info("=== Poll cycle: %s ===", datetime.now(timezone.utc).isoformat())
 
     try:

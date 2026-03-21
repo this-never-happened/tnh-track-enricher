@@ -67,55 +67,40 @@ def test_slugify_no_trailing_hyphens():
 
 # --- build_proposed_filename ---
 
-def test_build_proposed_filename_single_artist_with_version():
+def test_build_proposed_filename_with_version():
     from enrich_tracks import build_proposed_filename
     result = build_proposed_filename(
         isrc="GB-EWA-23-03320",
-        artist_names=["Sultan + Shepard"],
         track_title="RnR (Lane 8 Remix)",
         version=["Remix"],
         original_filename="Sultan-Shepard-RnR-Lane-8-Remix-GBEWA2303320.flac",
     )
-    assert result == "GBEWA2303320_Sultan-Shepard_RnR-Lane-8-Remix_Remix.flac"
-
-def test_build_proposed_filename_three_artists():
-    from enrich_tracks import build_proposed_filename
-    result = build_proposed_filename(
-        isrc="GBTNHH2500001",
-        artist_names=["Lane 8", "Sultan + Shepard", "sadhappy"],
-        track_title="Disappear",
-        version=["Extended Mix"],
-        original_filename="Lane-8-x-S-S-x-sadhappy-Disappear-v19m.wav",
-    )
-    assert result == "GBTNHH2500001_Lane-8-x-Sultan-Shepard-x-sadhappy_Disappear_Extended-Mix.wav"
+    assert result == "GBEWA2303320_RnR-Lane-8-Remix_Remix.flac"
 
 def test_build_proposed_filename_no_version():
     from enrich_tracks import build_proposed_filename
     result = build_proposed_filename(
         isrc="GBTNHH2500001",
-        artist_names=["Lane 8"],
         track_title="Disappear",
         version=[],
         original_filename="Lane-8-Disappear.wav",
     )
-    assert result == "GBTNHH2500001_Lane-8_Disappear.wav"
+    assert result == "GBTNHH2500001_Disappear.wav"
 
 def test_build_proposed_filename_uses_first_version_only():
     from enrich_tracks import build_proposed_filename
     result = build_proposed_filename(
         isrc="GBTNHH2500001",
-        artist_names=["Lane 8"],
         track_title="Disappear",
         version=["Extended Mix", "Radio Edit"],
         original_filename="Lane-8-Disappear.wav",
     )
-    assert result == "GBTNHH2500001_Lane-8_Disappear_Extended-Mix.wav"
+    assert result == "GBTNHH2500001_Disappear_Extended-Mix.wav"
 
 def test_build_proposed_filename_preserves_extension():
     from enrich_tracks import build_proposed_filename
     result = build_proposed_filename(
         isrc="GBTNHH2500001",
-        artist_names=["Lane 8"],
         track_title="Disappear",
         version=["Extended Mix"],
         original_filename="track.aiff",

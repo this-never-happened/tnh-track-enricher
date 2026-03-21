@@ -238,3 +238,125 @@ def write_bpm_duration(page_id: str, bpm: int, duration: str) -> None:
     else:
         _notion_sleep_patch(f"https://api.notion.com/v1/pages/{page_id}", payload)
         log.info("Wrote to Notion: bpm=%d, duration=%s", bpm, duration)
+
+# ── Dropbox download ──────────────────────────────────────────────────────────
+
+def download_dropbox_file(url: str) -> str:
+    """Download file to /tmp/<filename>. Returns local path."""
+    filename = extract_dropbox_filename(url)
+    local_path = f"/tmp/{filename}"
+    log.info("Downloading %s ...", filename)
+    r = requests.get(dropbox_direct_url(url), timeout=120, stream=True)
+    r.raise_for_status()
+    with open(local_path, "wb") as f:
+        for chunk in r.iter_content(chunk_size=8192):
+            f.write(chunk)
+    return local_path
+
+
+# ── Audio analysis ────────────────────────────────────────────────────────────
+
+def analyse_audio(path: str) -> tuple[int, str]:
+    """Return (bpm, duration_str). Logs wall-clock time."""
+    t0 = time.monotonic()
+    y, sr = librosa.load(path, sr=None)
+    tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
+    bpm = int(round(float(tempo) if not hasattr(tempo, "__len__") else float(tempo[0])))
+    duration = format_duration(librosa.get_duration(path=path))
+    log.info("Analysis done in %.1fs — BPM=%d, duration=%s", time.monotonic() - t0, bpm, duration)
+    return bpm, duration
+
+
+# ── Per-track processing ──────────────────────────────────────────────────────
+
+def process_track(track: dict) -> None:
+    name = track["track"] or track["page_id"]
+    log.info("── %s | ISRC: %s", name, track["isrc"])
+
+    # Resolve artist names
+    artist_names: list[str] = []
+    for url in track["artist_urls"]:
+        try:
+            artist_names.append(get_artist_name(url))
+        except Exception:
+            log.warning("Could not resolve artist %s:\n%s", url, traceback.format_exc())
+
+    original_filename = extract_dropbox_filename(track["master"])
+    local_path = None
+
+    try:
+        local_path = download_dropbox_file(track["master"])
+        bpm, duration = analyse_audio(local_path)
+        write_bpm_duration(track["page_id"], bpm, duration)
+        log.info("Result — BPM=%d, duration=%s", bpm, duration)
+
+        # Filename proposal (log only — no API calls)
+        proposed = build_proposed_filename(
+            track["isrc"], artist_names, track["track"], track["version"], original_filename
+        )
+        if filename_matches(original_filename, track["isrc"]):
+            log.info("Filename OK — no rename needed: %s", original_filename)
+        else:
+            log.info("CURRENT:  %s", original_filename)
+            log.info("PROPOSED: %s", proposed)
+
+    finally:
+        if local_path:
+            try:
+                os.remove(local_path)
+            except OSError:
+                log.warning("Could not delete temp file: %s", local_path)
+
+
+# ── Poll cycle ────────────────────────────────────────────────────────────────
+
+def poll_cycle() -> None:
+    global _artist_cache
+    _artist_cache = {}
+
+    log.info("=== Poll cycle: %s ===", datetime.now(timezone.utc).isoformat())
+
+    try:
+        pages = query_tracks()
+    except Exception:
+        log.error("Notion query failed:\n%s", traceback.format_exc())
+        return
+
+    queued = [p for p in pages if p["id"].replace("-", "") not in _failed_ids]
+    log.info("Tracks queued: %d (of %d returned)", len(queued), len(pages))
+
+    for page in queued:
+        try:
+            track = extract_track_fields(page)
+            process_track(track)
+        except Exception:
+            page_id = page["id"].replace("-", "")
+            name = (
+                "".join(
+                    t.get("plain_text", "")
+                    for t in page.get("properties", {})
+                    .get("track", {})
+                    .get("title", [])
+                ) or page_id
+            )
+            tb = traceback.format_exc()
+            log.error("Error processing '%s':\n%s", name, tb)
+            short_msg = tb.strip().splitlines()[-1][:200]
+            post_notion_comment(
+                page_id,
+                f"enrich_tracks error [{date.today()}]: {short_msg}",
+            )
+            _failed_ids.add(page_id)
+            continue
+
+
+def main() -> None:
+    log.info("enrich_tracks starting — DRY_RUN=%s, interval=%ds", DRY_RUN, POLL_INTERVAL)
+    while True:
+        poll_cycle()
+        log.info("Sleeping %ds...", POLL_INTERVAL)
+        time.sleep(POLL_INTERVAL)
+
+
+if __name__ == "__main__":
+    main()

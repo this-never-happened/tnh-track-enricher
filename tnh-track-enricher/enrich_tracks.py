@@ -166,9 +166,11 @@ def rename_dropbox_file(share_url: str, new_filename: str) -> bool:
             if not file_id:
                 log.warning("Dropbox: no path or id in metadata response: %s", meta)
                 return False
+            # File IDs are namespace-independent; Path-Root header causes not_found
+            headers_no_root = {k: v for k, v in headers.items() if k != "Dropbox-API-Path-Root"}
             r_meta = requests.post(
                 "https://api.dropboxapi.com/2/files/get_metadata",
-                headers=headers,
+                headers=headers_no_root,
                 json={"path": file_id},
                 timeout=30,
             )

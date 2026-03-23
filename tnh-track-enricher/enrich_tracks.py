@@ -133,44 +133,55 @@ def _dropbox_api_headers(access_token: str) -> dict:
 
 def rename_dropbox_file(share_url: str, new_filename: str) -> bool:
     """Rename the Dropbox file to new_filename in the same directory. Returns True on success."""
-    access_token = _get_dropbox_access_token()
+    log.info("Dropbox rename: starting for %s", new_filename)
+    try:
+        access_token = _get_dropbox_access_token()
+    except Exception:
+        log.warning("Dropbox token fetch exception:\n%s", traceback.format_exc())
+        return False
     if not access_token:
         log.warning("Dropbox rename skipped — no access token")
         return False
 
     headers = _dropbox_api_headers(access_token)
 
-    r = requests.post(
-        "https://api.dropboxapi.com/2/sharing/get_shared_link_metadata",
-        headers=headers,
-        json={"url": share_url},
-        timeout=30,
-    )
-    if r.status_code != 200:
-        log.warning("Dropbox metadata fetch failed: %s", r.text[:200])
+    try:
+        r = requests.post(
+            "https://api.dropboxapi.com/2/sharing/get_shared_link_metadata",
+            headers=headers,
+            json={"url": share_url},
+            timeout=30,
+        )
+        log.info("Dropbox metadata status: %d", r.status_code)
+        if r.status_code != 200:
+            log.warning("Dropbox metadata fetch failed: %s", r.text[:300])
+            return False
+
+        meta = r.json()
+        current_path = meta.get("path_display") or meta.get("path_lower")
+        if not current_path:
+            log.warning("Dropbox: no path in metadata response: %s", meta)
+            return False
+
+        parent = current_path.rsplit("/", 1)[0]
+        new_path = f"{parent}/{new_filename}"
+
+        log.info("Renaming Dropbox file: %s -> %s", current_path, new_path)
+        r2 = requests.post(
+            "https://api.dropboxapi.com/2/files/move_v2",
+            headers=headers,
+            json={"from_path": current_path, "to_path": new_path, "autorename": False},
+            timeout=30,
+        )
+        log.info("Dropbox move status: %d", r2.status_code)
+        if r2.status_code == 200:
+            log.info("Dropbox rename OK: %s", new_filename)
+            return True
+        log.warning("Dropbox move failed: %s", r2.text[:300])
         return False
-
-    meta = r.json()
-    current_path = meta.get("path_display") or meta.get("path_lower")
-    if not current_path:
-        log.warning("Dropbox: no path in metadata response")
+    except Exception:
+        log.warning("Dropbox rename exception:\n%s", traceback.format_exc())
         return False
-
-    parent = current_path.rsplit("/", 1)[0]
-    new_path = f"{parent}/{new_filename}"
-
-    log.info("Renaming Dropbox file: %s -> %s", current_path, new_path)
-    r2 = requests.post(
-        "https://api.dropboxapi.com/2/files/move_v2",
-        headers=headers,
-        json={"from_path": current_path, "to_path": new_path, "autorename": False},
-        timeout=30,
-    )
-    if r2.status_code == 200:
-        log.info("Dropbox rename OK: %s", new_filename)
-        return True
-    log.warning("Dropbox move failed: %s", r2.text[:300])
-    return False
 
 
 # ── Notion helpers ────────────────────────────────────────────────────────────

@@ -1,1 +1,1 @@
-worker: python enrich_tracks.py
+worker: /opt/venv/bin/python enrich_tracks.py

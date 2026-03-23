@@ -394,6 +394,11 @@ def poll_cycle() -> None:
 
 def main() -> None:
     log.info("enrich_tracks starting — DRY_RUN=%s, interval=%ds", DRY_RUN, POLL_INTERVAL)
+    token = _get_dropbox_access_token()
+    if token:
+        log.info("Dropbox token OK")
+    else:
+        log.warning("Dropbox token FAILED — renames will be skipped")
     while True:
         poll_cycle()
         log.info("Sleeping %ds...", POLL_INTERVAL)

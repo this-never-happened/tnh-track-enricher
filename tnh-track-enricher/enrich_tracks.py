@@ -2,8 +2,8 @@
 enrich_tracks.py — Railway polling worker
 Polls Notion Tracks DB every 5 minutes. For tracks with ISRC set but
 BPM/duration missing, downloads from Dropbox, extracts audio features
-via librosa, writes back to Notion. Logs proposed filename renames
-(Phase 1 — log only, no actual renames).
+via librosa, writes back to Notion. Renames Dropbox file to proposed
+ISRC-prefixed filename after enrichment.
 
 pip install librosa soundfile requests
 """
@@ -27,6 +27,12 @@ NOTION_TOKEN = os.environ.get("NOTION_TOKEN", "")
 TRACKS_DB_ID = "795482ebef3c4830ac7e3c037deaab68"
 POLL_INTERVAL = 300
 NOTION_SLEEP  = 0.35
+
+DROPBOX_APP_KEY      = os.environ.get("DROPBOX_APP_KEY", "")
+DROPBOX_APP_SECRET   = os.environ.get("DROPBOX_APP_SECRET", "")
+DROPBOX_REFRESH_TOKEN = os.environ.get("DROPBOX_REFRESH_TOKEN", "")
+DROPBOX_MEMBER_ID    = os.environ.get("DROPBOX_MEMBER_ID", "")
+DROPBOX_PATH_ROOT    = os.environ.get("DROPBOX_PATH_ROOT", "")
 
 NOTION_HEADERS = {
     "Authorization": f"Bearer {NOTION_TOKEN}",
@@ -99,6 +105,72 @@ def extract_dropbox_filename(url: str) -> str:
 
 def dropbox_direct_url(url: str) -> str:
     return re.sub(r"dl=0", "dl=1", url)
+
+
+def _get_dropbox_access_token() -> str | None:
+    if not DROPBOX_REFRESH_TOKEN:
+        return None
+    r = requests.post("https://api.dropbox.com/oauth2/token", data={
+        "grant_type": "refresh_token",
+        "refresh_token": DROPBOX_REFRESH_TOKEN,
+        "client_id": DROPBOX_APP_KEY,
+        "client_secret": DROPBOX_APP_SECRET,
+    }, timeout=30)
+    if r.status_code == 200:
+        return r.json().get("access_token")
+    log.warning("Dropbox token refresh failed: %s", r.text[:200])
+    return None
+
+
+def _dropbox_api_headers(access_token: str) -> dict:
+    h = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
+    if DROPBOX_MEMBER_ID:
+        h["Dropbox-API-Select-User"] = DROPBOX_MEMBER_ID
+    if DROPBOX_PATH_ROOT:
+        h["Dropbox-API-Path-Root"] = DROPBOX_PATH_ROOT
+    return h
+
+
+def rename_dropbox_file(share_url: str, new_filename: str) -> bool:
+    """Rename the Dropbox file to new_filename in the same directory. Returns True on success."""
+    access_token = _get_dropbox_access_token()
+    if not access_token:
+        log.warning("Dropbox rename skipped — no access token")
+        return False
+
+    headers = _dropbox_api_headers(access_token)
+
+    r = requests.post(
+        "https://api.dropboxapi.com/2/sharing/get_shared_link_metadata",
+        headers=headers,
+        json={"url": share_url},
+        timeout=30,
+    )
+    if r.status_code != 200:
+        log.warning("Dropbox metadata fetch failed: %s", r.text[:200])
+        return False
+
+    meta = r.json()
+    current_path = meta.get("path_display") or meta.get("path_lower")
+    if not current_path:
+        log.warning("Dropbox: no path in metadata response")
+        return False
+
+    parent = current_path.rsplit("/", 1)[0]
+    new_path = f"{parent}/{new_filename}"
+
+    log.info("Renaming Dropbox file: %s -> %s", current_path, new_path)
+    r2 = requests.post(
+        "https://api.dropboxapi.com/2/files/move_v2",
+        headers=headers,
+        json={"from_path": current_path, "to_path": new_path, "autorename": False},
+        timeout=30,
+    )
+    if r2.status_code == 200:
+        log.info("Dropbox rename OK: %s", new_filename)
+        return True
+    log.warning("Dropbox move failed: %s", r2.text[:300])
+    return False
 
 
 # ── Notion helpers ────────────────────────────────────────────────────────────
@@ -250,15 +322,17 @@ def process_track(track: dict) -> None:
         write_bpm_duration(track["page_id"], bpm, duration)
         log.info("Result — BPM=%d, duration=%s", bpm, duration)
 
-        # Filename proposal (log only — no API calls)
         proposed = build_proposed_filename(
             track["isrc"], track["track"], track["version"], original_filename
         )
         if filename_matches(original_filename, track["isrc"]):
             log.info("Filename OK — no rename needed: %s", original_filename)
+        elif DRY_RUN:
+            log.info("[DRY RUN] Would rename: %s -> %s", original_filename, proposed)
         else:
             log.info("CURRENT:  %s", original_filename)
             log.info("PROPOSED: %s", proposed)
+            rename_dropbox_file(track["master"], proposed)
 
     finally:
         if local_path:

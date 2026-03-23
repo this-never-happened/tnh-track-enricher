@@ -159,9 +159,27 @@ def rename_dropbox_file(share_url: str, new_filename: str) -> bool:
 
         meta = r.json()
         current_path = meta.get("path_display") or meta.get("path_lower")
+
+        # Team accounts often omit path from shared link metadata — fetch via file ID
         if not current_path:
-            log.warning("Dropbox: no path in metadata response: %s", meta)
-            return False
+            file_id = meta.get("id")
+            if not file_id:
+                log.warning("Dropbox: no path or id in metadata response: %s", meta)
+                return False
+            r_meta = requests.post(
+                "https://api.dropboxapi.com/2/files/get_metadata",
+                headers=headers,
+                json={"path": file_id},
+                timeout=30,
+            )
+            if r_meta.status_code != 200:
+                log.warning("Dropbox file metadata fetch failed: %s", r_meta.text[:300])
+                return False
+            file_meta = r_meta.json()
+            current_path = file_meta.get("path_display") or file_meta.get("path_lower")
+            if not current_path:
+                log.warning("Dropbox: no path in file metadata: %s", file_meta)
+                return False
 
         parent = current_path.rsplit("/", 1)[0]
         new_path = f"{parent}/{new_filename}"

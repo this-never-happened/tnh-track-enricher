@@ -160,31 +160,27 @@ def rename_dropbox_file(share_url: str, new_filename: str) -> bool:
         meta = r.json()
         current_path = meta.get("path_display") or meta.get("path_lower")
 
-        # Team accounts often omit path from shared link metadata — fetch via file ID
+        # Team accounts omit path from shared link metadata — search by filename instead
         if not current_path:
-            file_id = meta.get("id")
-            if not file_id:
-                log.warning("Dropbox: no path or id in metadata response: %s", meta)
-                return False
-            # File IDs are namespace-independent; Path-Root AND Select-User cause not_found
-            log.info("Dropbox: looking up file ID %s", file_id)
-            headers_bare = {
-                "Authorization": headers["Authorization"],
-                "Content-Type": "application/json",
-            }
-            r_meta = requests.post(
-                "https://api.dropboxapi.com/2/files/get_metadata",
-                headers=headers_bare,
-                json={"path": file_id},
+            filename = meta.get("name") or extract_dropbox_filename(share_url)
+            log.info("Dropbox: searching for filename %r", filename)
+            r_search = requests.post(
+                "https://api.dropboxapi.com/2/files/search_v2",
+                headers=headers,
+                json={"query": filename, "options": {"filename_only": True, "max_results": 10}},
                 timeout=30,
             )
-            if r_meta.status_code != 200:
-                log.warning("Dropbox file metadata fetch failed: %s", r_meta.text[:300])
+            if r_search.status_code != 200:
+                log.warning("Dropbox search failed: %s", r_search.text[:300])
                 return False
-            file_meta = r_meta.json()
-            current_path = file_meta.get("path_display") or file_meta.get("path_lower")
+            matches = r_search.json().get("matches", [])
+            for m in matches:
+                file_meta = m.get("metadata", {}).get("metadata", {})
+                if file_meta.get("name") == filename:
+                    current_path = file_meta.get("path_display") or file_meta.get("path_lower")
+                    break
             if not current_path:
-                log.warning("Dropbox: no path in file metadata: %s", file_meta)
+                log.warning("Dropbox: no matching file found for %r (got %d results)", filename, len(matches))
                 return False
 
         parent = current_path.rsplit("/", 1)[0]

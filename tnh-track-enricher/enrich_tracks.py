@@ -186,6 +186,10 @@ def rename_dropbox_file(share_url: str, new_filename: str) -> str | None:
         parent = current_path.rsplit("/", 1)[0]
         new_path = f"{parent}/{new_filename}"
 
+        if current_path == new_path:
+            log.info("Dropbox file already has correct name: %s", new_filename)
+            return new_path
+
         log.info("Renaming Dropbox file: %s -> %s", current_path, new_path)
         r2 = requests.post(
             "https://api.dropboxapi.com/2/files/move_v2",

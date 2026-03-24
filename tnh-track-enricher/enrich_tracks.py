@@ -138,10 +138,10 @@ def rename_dropbox_file(share_url: str, new_filename: str) -> str | None:
         access_token = _get_dropbox_access_token()
     except Exception:
         log.warning("Dropbox token fetch exception:\n%s", traceback.format_exc())
-        return False
+        return None
     if not access_token:
         log.warning("Dropbox rename skipped — no access token")
-        return False
+        return None
 
     headers = _dropbox_api_headers(access_token)
 
@@ -155,7 +155,7 @@ def rename_dropbox_file(share_url: str, new_filename: str) -> str | None:
         log.info("Dropbox metadata status: %d", r.status_code)
         if r.status_code != 200:
             log.warning("Dropbox metadata fetch failed: %s", r.text[:300])
-            return False
+            return None
 
         meta = r.json()
         current_path = meta.get("path_display") or meta.get("path_lower")
@@ -172,7 +172,7 @@ def rename_dropbox_file(share_url: str, new_filename: str) -> str | None:
             )
             if r_search.status_code != 200:
                 log.warning("Dropbox search failed: %s", r_search.text[:300])
-                return False
+                return None
             matches = r_search.json().get("matches", [])
             for m in matches:
                 file_meta = m.get("metadata", {}).get("metadata", {})
@@ -180,8 +180,23 @@ def rename_dropbox_file(share_url: str, new_filename: str) -> str | None:
                     current_path = file_meta.get("path_display") or file_meta.get("path_lower")
                     break
             if not current_path:
-                log.warning("Dropbox: no matching file found for %r (got %d results)", filename, len(matches))
-                return False
+                # Metadata name may be stale after a prior rename — try searching for the target name
+                log.info("Dropbox: searching for already-renamed target %r", new_filename)
+                r_search2 = requests.post(
+                    "https://api.dropboxapi.com/2/files/search_v2",
+                    headers=headers,
+                    json={"query": new_filename, "options": {"filename_only": True, "max_results": 10}},
+                    timeout=30,
+                )
+                if r_search2.status_code == 200:
+                    for m in r_search2.json().get("matches", []):
+                        file_meta = m.get("metadata", {}).get("metadata", {})
+                        if file_meta.get("name") == new_filename:
+                            current_path = file_meta.get("path_display") or file_meta.get("path_lower")
+                            break
+            if not current_path:
+                log.warning("Dropbox: could not resolve path for %r or %r", filename, new_filename)
+                return None
 
         parent = current_path.rsplit("/", 1)[0]
         new_path = f"{parent}/{new_filename}"

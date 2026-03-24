@@ -131,8 +131,8 @@ def _dropbox_api_headers(access_token: str) -> dict:
     return h
 
 
-def rename_dropbox_file(share_url: str, new_filename: str) -> bool:
-    """Rename the Dropbox file to new_filename in the same directory. Returns True on success."""
+def rename_dropbox_file(share_url: str, new_filename: str) -> str | None:
+    """Rename the Dropbox file to new_filename in the same directory. Returns new path on success."""
     log.info("Dropbox rename: starting for %s", new_filename)
     try:
         access_token = _get_dropbox_access_token()
@@ -196,12 +196,57 @@ def rename_dropbox_file(share_url: str, new_filename: str) -> bool:
         log.info("Dropbox move status: %d", r2.status_code)
         if r2.status_code == 200:
             log.info("Dropbox rename OK: %s", new_filename)
-            return True
+            return new_path
         log.warning("Dropbox move failed: %s", r2.text[:300])
-        return False
+        return None
     except Exception:
         log.warning("Dropbox rename exception:\n%s", traceback.format_exc())
-        return False
+        return None
+
+
+def create_dropbox_share_link(new_path: str) -> str | None:
+    """Create a shared link for the file at new_path. Returns the share URL or None."""
+    try:
+        access_token = _get_dropbox_access_token()
+    except Exception:
+        log.warning("Dropbox token fetch exception:\n%s", traceback.format_exc())
+        return None
+    if not access_token:
+        return None
+
+    headers = _dropbox_api_headers(access_token)
+    r = requests.post(
+        "https://api.dropboxapi.com/2/sharing/create_shared_link_with_settings",
+        headers=headers,
+        json={"path": new_path},
+        timeout=30,
+    )
+    if r.status_code == 200:
+        url = r.json().get("url", "")
+        log.info("New share link: %s", url)
+        return url
+    # Already shared — fetch the existing link
+    if r.status_code == 409 and "shared_link_already_exists" in r.text:
+        data = r.json().get("error", {}).get("shared_link_already_exists", {})
+        url = data.get("metadata", {}).get("url", "")
+        if url:
+            log.info("Existing share link: %s", url)
+            return url
+        # Fall back to list_shared_links
+        r2 = requests.post(
+            "https://api.dropboxapi.com/2/sharing/list_shared_links",
+            headers=headers,
+            json={"path": new_path, "direct_only": True},
+            timeout=30,
+        )
+        if r2.status_code == 200:
+            links = r2.json().get("links", [])
+            if links:
+                url = links[0].get("url", "")
+                log.info("Fetched existing share link: %s", url)
+                return url
+    log.warning("Failed to create share link: %s", r.text[:300])
+    return None
 
 
 # ── Notion helpers ────────────────────────────────────────────────────────────
@@ -297,6 +342,15 @@ def extract_track_fields(page: dict) -> dict:
     }
 
 
+def write_master_url(page_id: str, url: str) -> None:
+    payload = {"properties": {"master": {"url": url}}}
+    if DRY_RUN:
+        log.info("[DRY RUN] Would update master URL for %s -> %s", page_id, url)
+    else:
+        _notion_sleep_patch(f"https://api.notion.com/v1/pages/{page_id}", payload)
+        log.info("Updated Notion master URL: %s", url)
+
+
 def write_bpm_duration(page_id: str, bpm: int, duration: str) -> None:
     payload = {
         "properties": {
@@ -363,7 +417,11 @@ def process_track(track: dict) -> None:
         else:
             log.info("CURRENT:  %s", original_filename)
             log.info("PROPOSED: %s", proposed)
-            rename_dropbox_file(track["master"], proposed)
+            new_path = rename_dropbox_file(track["master"], proposed)
+            if new_path:
+                new_url = create_dropbox_share_link(new_path)
+                if new_url:
+                    write_master_url(track["page_id"], new_url)
 
     finally:
         if local_path:

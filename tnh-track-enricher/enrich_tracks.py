@@ -325,6 +325,24 @@ def post_notion_comment(page_id: str, message: str) -> None:
 
 
 
+def query_rename_candidates() -> list[dict]:
+    """Query enriched tracks that may still need a Dropbox rename (up to 20 per cycle)."""
+    url = f"https://api.notion.com/v1/databases/{TRACKS_DB_ID}/query"
+    payload = {
+        "filter": {
+            "and": [
+                {"property": "isrc",     "rich_text": {"is_not_empty": True}},
+                {"property": "master",   "url":       {"is_not_empty": True}},
+                {"property": "bpm",      "number":    {"is_not_empty": True}},
+                {"property": "duration", "rich_text": {"is_not_empty": True}},
+            ]
+        },
+        "page_size": 20,
+    }
+    data = _notion_sleep_post(url, payload)
+    return data.get("results", [])
+
+
 def query_tracks() -> list[dict]:
     """Query Notion for tracks needing enrichment. Server-side filter + paginated."""
     url = f"https://api.notion.com/v1/databases/{TRACKS_DB_ID}/query"
@@ -506,6 +524,36 @@ def poll_cycle() -> None:
             )
             _failed_ids.add(page_id)
             continue
+
+    # Rename-only pass: catch enriched tracks whose Dropbox file wasn't renamed yet
+    try:
+        rename_pages = query_rename_candidates()
+    except Exception:
+        log.warning("Rename-candidate query failed:\n%s", traceback.format_exc())
+        rename_pages = []
+
+    for page in rename_pages:
+        if page["id"].replace("-", "") in _failed_ids:
+            continue
+        try:
+            track = extract_track_fields(page)
+            original_filename = extract_dropbox_filename(track["master"])
+            if filename_matches(original_filename, track["isrc"]):
+                continue
+            proposed = build_proposed_filename(
+                track["isrc"], track["track"], track["version"], original_filename
+            )
+            log.info("Rename-only: %s -> %s", original_filename, proposed)
+            if not DRY_RUN:
+                new_path = rename_dropbox_file(track["master"], proposed)
+                if new_path:
+                    new_url = create_dropbox_share_link(new_path)
+                    if new_url:
+                        write_master_url(track["page_id"], new_url)
+            else:
+                log.info("[DRY RUN] Would rename: %s -> %s", original_filename, proposed)
+        except Exception:
+            log.error("Rename-only error for %s:\n%s", page["id"], traceback.format_exc())
 
 
 def main() -> None:

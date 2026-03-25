@@ -332,21 +332,31 @@ def post_notion_comment(page_id: str, message: str) -> None:
 
 
 def query_rename_candidates() -> list[dict]:
-    """Query enriched tracks that may still need a Dropbox rename (up to 20 per cycle)."""
+    """Query all enriched tracks that may need a Dropbox rename. Fully paginated."""
     url = f"https://api.notion.com/v1/databases/{TRACKS_DB_ID}/query"
-    payload = {
-        "filter": {
-            "and": [
-                {"property": "isrc",     "rich_text": {"is_not_empty": True}},
-                {"property": "master",   "url":       {"is_not_empty": True}},
-                {"property": "bpm",      "number":    {"is_not_empty": True}},
-                {"property": "duration", "rich_text": {"is_not_empty": True}},
-            ]
-        },
-        "page_size": 20,
-    }
-    data = _notion_sleep_post(url, payload)
-    return data.get("results", [])
+    pages: list[dict] = []
+    cursor = None
+    while True:
+        payload: dict = {
+            "filter": {
+                "and": [
+                    {"property": "isrc",     "rich_text": {"is_not_empty": True}},
+                    {"property": "master",   "url":       {"is_not_empty": True}},
+                    {"property": "bpm",      "number":    {"is_not_empty": True}},
+                    {"property": "duration", "rich_text": {"is_not_empty": True}},
+                ]
+            },
+            "page_size": 100,
+        }
+        if cursor:
+            payload["start_cursor"] = cursor
+        data = _notion_sleep_post(url, payload)
+        pages.extend(data.get("results", []))
+        if data.get("has_more"):
+            cursor = data["next_cursor"]
+        else:
+            break
+    return pages
 
 
 def query_tracks() -> list[dict]:

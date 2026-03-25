@@ -163,6 +163,7 @@ def rename_dropbox_file(share_url: str, new_filename: str) -> str | None:
         # Team accounts omit path from shared link metadata — resolve via file ID first
         if not current_path:
             file_id = meta.get("id")
+            log.info("Dropbox: file ID from shared link metadata: %s", file_id)
             if file_id:
                 headers_no_root = {k: v for k, v in headers.items() if k != "Dropbox-API-Path-Root"}
                 r_meta = requests.post(
@@ -171,9 +172,12 @@ def rename_dropbox_file(share_url: str, new_filename: str) -> str | None:
                     json={"path": file_id},
                     timeout=30,
                 )
+                log.info("Dropbox get_metadata status: %d", r_meta.status_code)
                 if r_meta.status_code == 200:
                     current_path = r_meta.json().get("path_display") or r_meta.json().get("path_lower")
                     log.info("Dropbox: resolved path via file ID: %s", current_path)
+                else:
+                    log.warning("Dropbox get_metadata failed: %s", r_meta.text[:300])
 
         # Fall back to search if file ID lookup didn't resolve
         if not current_path:

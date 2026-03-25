@@ -82,10 +82,17 @@ def build_proposed_filename(
 ) -> str:
     ext = ("." + original_filename.rsplit(".", 1)[-1]) if "." in original_filename else ""
     isrc_slug = _strip_isrc_hyphens(isrc)
-    track_slug = _slugify(track_title)
+
+    # Strip version text from title if it appears in parentheses (e.g. "Title (Extended Mix)")
+    clean_title = track_title
+    if version:
+        for v in version:
+            clean_title = re.sub(rf"\s*\({re.escape(v)}\)\s*$", "", clean_title).strip()
+
+    track_slug = _slugify(clean_title)
 
     if version:
-        version_slug = version[0].replace(" ", "-")
+        version_slug = _slugify(version[0])
         return f"{isrc_slug}_{track_slug}_{version_slug}{ext}"
     return f"{isrc_slug}_{track_slug}{ext}"
 
@@ -165,10 +172,9 @@ def rename_dropbox_file(share_url: str, new_filename: str) -> str | None:
             file_id = meta.get("id")
             log.info("Dropbox: file ID from shared link metadata: %s", file_id)
             if file_id:
-                headers_no_root = {k: v for k, v in headers.items() if k != "Dropbox-API-Path-Root"}
                 r_meta = requests.post(
                     "https://api.dropboxapi.com/2/files/get_metadata",
-                    headers=headers_no_root,
+                    headers=headers,
                     json={"path": file_id},
                     timeout=30,
                 )
@@ -466,7 +472,7 @@ def process_track(track: dict) -> None:
         proposed = build_proposed_filename(
             track["isrc"], track["track"], track["version"], original_filename
         )
-        if filename_matches(original_filename, track["isrc"]):
+        if original_filename == proposed:
             log.info("Filename OK — no rename needed: %s", original_filename)
         elif DRY_RUN:
             log.info("[DRY RUN] Would rename: %s -> %s", original_filename, proposed)
@@ -538,11 +544,11 @@ def poll_cycle() -> None:
         try:
             track = extract_track_fields(page)
             original_filename = extract_dropbox_filename(track["master"])
-            if filename_matches(original_filename, track["isrc"]):
-                continue
             proposed = build_proposed_filename(
                 track["isrc"], track["track"], track["version"], original_filename
             )
+            if original_filename == proposed:
+                continue
             log.info("Rename-only: %s -> %s", original_filename, proposed)
             if not DRY_RUN:
                 new_path = rename_dropbox_file(track["master"], proposed)

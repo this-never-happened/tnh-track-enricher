@@ -355,6 +355,27 @@ def query_rename_candidates() -> list[dict]:
     return data.get("results", [])
 
 
+def query_no_isrc_candidates() -> list[dict]:
+    """Query tracks that have a Dropbox master but no ISRC and need BPM/duration."""
+    url = f"https://api.notion.com/v1/databases/{TRACKS_DB_ID}/query"
+    payload = {
+        "filter": {
+            "and": [
+                {"property": "master", "url":       {"is_not_empty": True}},
+                {"property": "isrc",   "rich_text": {"is_empty": True}},
+                {"or": [
+                    {"property": "bpm",      "number":    {"is_empty": True}},
+                    {"property": "duration", "rich_text": {"is_empty": True}},
+                ]},
+            ]
+        },
+        "sorts": [{"timestamp": "last_edited_time", "direction": "ascending"}],
+        "page_size": 20,
+    }
+    data = _notion_sleep_post(url, payload)
+    return data.get("results", [])
+
+
 def query_tracks() -> list[dict]:
     """Query Notion for tracks needing enrichment. Server-side filter + paginated."""
     url = f"https://api.notion.com/v1/databases/{TRACKS_DB_ID}/query"
@@ -566,6 +587,39 @@ def poll_cycle() -> None:
                 log.info("[DRY RUN] Would rename: %s -> %s", original_filename, proposed)
         except Exception:
             log.error("Rename-only error for %s:\n%s", page["id"], traceback.format_exc())
+
+    # No-ISRC pass: enrich BPM/duration for tracks with a master link but no ISRC yet
+    try:
+        no_isrc_pages = query_no_isrc_candidates()
+    except Exception:
+        log.warning("No-ISRC query failed:\n%s", traceback.format_exc())
+        no_isrc_pages = []
+
+    if no_isrc_pages:
+        log.info("No-ISRC tracks to enrich: %d", len(no_isrc_pages))
+
+    for page in no_isrc_pages:
+        if page["id"].replace("-", "") in _failed_ids:
+            continue
+        local_path = None
+        try:
+            track = extract_track_fields(page)
+            name = track["track"] or track["page_id"]
+            log.info("── (no ISRC) %s", name)
+            local_path = download_dropbox_file(track["master"])
+            bpm, duration = analyse_audio(local_path)
+            write_bpm_duration(track["page_id"], bpm, duration)
+            log.info("Result — BPM=%d, duration=%s", bpm, duration)
+        except Exception:
+            page_id = page["id"].replace("-", "")
+            log.error("No-ISRC error for %s:\n%s", page_id, traceback.format_exc())
+            _failed_ids.add(page_id)
+        finally:
+            if local_path:
+                try:
+                    os.remove(local_path)
+                except OSError:
+                    log.warning("Could not delete temp file: %s", local_path)
 
 
 def main() -> None:

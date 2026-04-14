@@ -40,6 +40,9 @@ NOTION_HEADERS = {
     "Content-Type": "application/json",
 }
 
+SPOTIFY_CLIENT_ID     = os.environ.get("SPOTIFY_CLIENT_ID", "")
+SPOTIFY_CLIENT_SECRET = os.environ.get("SPOTIFY_CLIENT_SECRET", "")
+
 # ── Logging ───────────────────────────────────────────────────────────────────
 
 logging.basicConfig(
@@ -52,6 +55,11 @@ log = logging.getLogger(__name__)
 # ── State ─────────────────────────────────────────────────────────────────────
 
 _failed_ids: set[str] = set()
+
+_spotify_token: str = ""
+_spotify_token_expiry: float = 0.0
+
+_KEY_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 
 # ── Pure functions ────────────────────────────────────────────────────────────
 
@@ -331,6 +339,131 @@ def post_notion_comment(page_id: str, message: str) -> None:
 
 
 
+# ── Spotify helpers ───────────────────────────────────────────────────────────
+
+def get_spotify_token() -> str:
+    global _spotify_token, _spotify_token_expiry
+    if time.monotonic() < _spotify_token_expiry - 60:
+        return _spotify_token
+    r = requests.post(
+        "https://accounts.spotify.com/api/token",
+        data={
+            "grant_type": "client_credentials",
+            "client_id": SPOTIFY_CLIENT_ID,
+            "client_secret": SPOTIFY_CLIENT_SECRET,
+        },
+        timeout=15,
+    )
+    r.raise_for_status()
+    data = r.json()
+    _spotify_token = data["access_token"]
+    _spotify_token_expiry = time.monotonic() + data["expires_in"]
+    log.info("Spotify token refreshed (expires in %ds)", data["expires_in"])
+    return _spotify_token
+
+
+def _spotify_get(url: str, **kwargs) -> requests.Response:
+    """GET with automatic token injection and 429 backoff."""
+    for attempt in range(3):
+        r = requests.get(
+            url,
+            headers={"Authorization": f"Bearer {get_spotify_token()}"},
+            timeout=15,
+            **kwargs,
+        )
+        if r.status_code == 429:
+            retry_after = int(r.headers.get("Retry-After", 5))
+            log.warning("Spotify rate limited — sleeping %ds", retry_after)
+            time.sleep(retry_after)
+            continue
+        return r
+    r.raise_for_status()
+    return r
+
+
+def spotify_track_by_isrc(isrc: str) -> dict | None:
+    r = _spotify_get(
+        "https://api.spotify.com/v1/search",
+        params={"q": f"isrc:{isrc}", "type": "track", "limit": 1},
+    )
+    if r.status_code == 404:
+        return None
+    r.raise_for_status()
+    items = r.json().get("tracks", {}).get("items", [])
+    return items[0] if items else None
+
+
+def spotify_audio_features(track_id: str) -> dict | None:
+    r = _spotify_get(f"https://api.spotify.com/v1/audio-features/{track_id}")
+    if r.status_code == 404:
+        return None
+    r.raise_for_status()
+    return r.json()
+
+
+def format_key(key_int: int, mode_int: int) -> str:
+    if key_int == -1:
+        return ""
+    return f"{_KEY_NAMES[key_int]} {'major' if mode_int == 1 else 'minor'}"
+
+
+def query_spotify_candidates() -> list[dict]:
+    """Query tracks with ISRC set but key field empty."""
+    url = f"https://api.notion.com/v1/databases/{TRACKS_DB_ID}/query"
+    pages: list[dict] = []
+    cursor = None
+    while True:
+        payload: dict = {
+            "filter": {
+                "and": [
+                    {"property": "isrc", "rich_text": {"is_not_empty": True}},
+                    {"property": "key",  "rich_text": {"is_empty": True}},
+                ]
+            },
+            "page_size": 100,
+        }
+        if cursor:
+            payload["start_cursor"] = cursor
+        data = _notion_sleep_post(url, payload)
+        pages.extend(data.get("results", []))
+        if data.get("has_more"):
+            cursor = data["next_cursor"]
+        else:
+            break
+    return pages
+
+
+def write_spotify_fields(page_id: str, bpm: int, key: str) -> None:
+    props: dict = {"bpm": {"number": bpm}}
+    if key:
+        props["key"] = {"rich_text": [{"type": "text", "text": {"content": key}}]}
+    if DRY_RUN:
+        log.info("[DRY RUN] Would PATCH %s → bpm=%d, key=%s", page_id, bpm, key or "(none)")
+    else:
+        _notion_sleep_patch(f"https://api.notion.com/v1/pages/{page_id}", {"properties": props})
+        log.info("Wrote Spotify fields: bpm=%d, key=%s", bpm, key or "(none)")
+
+
+def process_spotify_track(track: dict) -> None:
+    name = track["track"] or track["page_id"]
+    log.info("── Spotify: %s | ISRC: %s", name, track["isrc"])
+
+    spotify_track = spotify_track_by_isrc(track["isrc"])
+    if not spotify_track:
+        log.info("No Spotify match for ISRC %s — skipping", track["isrc"])
+        return
+
+    features = spotify_audio_features(spotify_track["id"])
+    if not features:
+        log.info("No audio features for Spotify ID %s — skipping", spotify_track["id"])
+        return
+
+    bpm = int(round(features["tempo"]))
+    key = format_key(features["key"], features["mode"])
+    log.info("Spotify result: bpm=%d, key=%s", bpm, key or "(no key detected)")
+    write_spotify_fields(track["page_id"], bpm, key)
+
+
 def query_rename_candidates() -> list[dict]:
     """Query 50 least-recently-edited enriched tracks for rename check per cycle.
 
@@ -426,6 +559,7 @@ def extract_track_fields(page: dict) -> dict:
         "isrc":        rich_text("isrc"),
         "bpm":         props.get("bpm", {}).get("number"),
         "duration":    rich_text("duration"),
+        "key":         rich_text("key"),
         "master":      (props.get("master", {}).get("url") or "").strip(),
         "version":     [o["name"] for o in props.get("version", {}).get("multi_select", [])],
     }
@@ -587,6 +721,30 @@ def poll_cycle() -> None:
                 log.info("[DRY RUN] Would rename: %s -> %s", original_filename, proposed)
         except Exception:
             log.error("Rename-only error for %s:\n%s", page["id"], traceback.format_exc())
+
+    # Spotify pass: fill key + override BPM for tracks with ISRC but no key yet
+    if SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET:
+        try:
+            spotify_pages = query_spotify_candidates()
+        except Exception:
+            log.warning("Spotify candidate query failed:\n%s", traceback.format_exc())
+            spotify_pages = []
+
+        if spotify_pages:
+            log.info("Spotify enrichment candidates: %d", len(spotify_pages))
+
+        for page in spotify_pages:
+            if page["id"].replace("-", "") in _failed_ids:
+                continue
+            try:
+                track = extract_track_fields(page)
+                process_spotify_track(track)
+            except Exception:
+                page_id = page["id"].replace("-", "")
+                log.error("Spotify error for %s:\n%s", page_id, traceback.format_exc())
+                _failed_ids.add(page_id)
+    else:
+        log.debug("Spotify credentials not set — skipping Spotify pass")
 
     # No-ISRC pass: enrich BPM/duration for tracks with a master link but no ISRC yet
     try:

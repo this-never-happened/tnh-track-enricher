@@ -372,7 +372,7 @@ def _spotify_get(url: str, **kwargs) -> requests.Response:
             **kwargs,
         )
         if r.status_code == 429:
-            retry_after = int(r.headers.get("Retry-After", 5))
+            retry_after = min(int(r.headers.get("Retry-After", 5)), 60)
             log.warning("Spotify rate limited — sleeping %ds", retry_after)
             time.sleep(retry_after)
             continue
@@ -395,7 +395,7 @@ def spotify_track_by_isrc(isrc: str) -> dict | None:
 
 def spotify_audio_features(track_id: str) -> dict | None:
     r = _spotify_get(f"https://api.spotify.com/v1/audio-features/{track_id}")
-    if r.status_code == 404:
+    if r.status_code in (403, 404):
         return None
     r.raise_for_status()
     return r.json()
@@ -742,7 +742,6 @@ def poll_cycle() -> None:
             except Exception:
                 page_id = page["id"].replace("-", "")
                 log.error("Spotify error for %s:\n%s", page_id, traceback.format_exc())
-                _failed_ids.add(page_id)
     else:
         log.debug("Spotify credentials not set — skipping Spotify pass")
 

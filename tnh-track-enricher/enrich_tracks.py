@@ -722,28 +722,9 @@ def poll_cycle() -> None:
         except Exception:
             log.error("Rename-only error for %s:\n%s", page["id"], traceback.format_exc())
 
-    # Spotify pass: fill key + override BPM for tracks with ISRC but no key yet
-    if SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET:
-        try:
-            spotify_pages = query_spotify_candidates()
-        except Exception:
-            log.warning("Spotify candidate query failed:\n%s", traceback.format_exc())
-            spotify_pages = []
-
-        if spotify_pages:
-            log.info("Spotify enrichment candidates: %d", len(spotify_pages))
-
-        for page in spotify_pages:
-            if page["id"].replace("-", "") in _failed_ids:
-                continue
-            try:
-                track = extract_track_fields(page)
-                process_spotify_track(track)
-            except Exception:
-                page_id = page["id"].replace("-", "")
-                log.error("Spotify error for %s:\n%s", page_id, traceback.format_exc())
-    else:
-        log.debug("Spotify credentials not set — skipping Spotify pass")
+    # Spotify pass disabled — audio features endpoint (BPM/key) is 403 for client
+    # credentials apps. Popularity tracking handled by tnh-spotify-tracker service.
+    log.debug("Spotify enrichment pass skipped — audio features unavailable")
 
     # No-ISRC pass: enrich BPM/duration for tracks with a master link but no ISRC yet
     try:

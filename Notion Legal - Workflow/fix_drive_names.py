@@ -58,7 +58,7 @@ def get_drive_service():
     token_data = json.loads(base64.b64decode(token_b64).decode())
     expiry = None
     if token_data.get("expiry"):
-        expiry = datetime.fromisoformat(token_data["expiry"].replace("Z", "+00:00"))
+        expiry = datetime.fromisoformat(token_data["expiry"].replace("Z", "+00:00")).replace(tzinfo=None)
     creds = Credentials(
         token=token_data.get("token"),
         refresh_token=token_data.get("refresh_token"),

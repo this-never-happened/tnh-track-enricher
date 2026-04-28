@@ -160,3 +160,7 @@ def main():
         print(f"Fixed:          {fixed}")
     else:
         print(f"\nRe-run with --fix to rename all mismatched files.")
+
+
+if __name__ == "__main__":
+    main()

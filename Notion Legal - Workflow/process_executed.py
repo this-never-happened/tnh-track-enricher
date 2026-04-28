@@ -23,11 +23,11 @@ import os
 import re
 import time
 import json
-import pickle
 import base64
 import requests
 from datetime import datetime
 
+from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 
@@ -54,11 +54,19 @@ MASTER_TYPES = {"licence", "exclusive license"}
 # ── GOOGLE AUTH ───────────────────────────────────────────────────────────────
 
 def get_drive_service():
-    """Load credentials from LEGAL_TOKEN env var (base64-encoded pickle)."""
-    token_b64 = os.environ.get("LEGAL_TOKEN")
+    """Load credentials from SHEETS_TOKEN env var (base64-encoded JSON)."""
+    token_b64 = os.environ.get("SHEETS_TOKEN")
     if not token_b64:
-        raise RuntimeError("LEGAL_TOKEN environment variable not set")
-    creds = pickle.loads(base64.b64decode(token_b64))
+        raise RuntimeError("SHEETS_TOKEN environment variable not set")
+    token_data = json.loads(base64.b64decode(token_b64).decode())
+    creds = Credentials(
+        token=token_data.get("token"),
+        refresh_token=token_data.get("refresh_token"),
+        token_uri=token_data.get("token_uri"),
+        client_id=token_data.get("client_id"),
+        client_secret=token_data.get("client_secret"),
+        scopes=token_data.get("scopes"),
+    )
     if not creds.valid:
         if creds.expired and creds.refresh_token:
             creds.refresh(Request())

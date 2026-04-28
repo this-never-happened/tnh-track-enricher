@@ -8,6 +8,7 @@ Run with: railway run python fix_drive_names.py
 
 import os, re, time, json, base64, requests
 from collections import defaultdict
+from datetime import datetime, timezone
 
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
@@ -55,6 +56,9 @@ def get_drive_service():
     if not token_b64:
         raise RuntimeError("SHEETS_TOKEN not set")
     token_data = json.loads(base64.b64decode(token_b64).decode())
+    expiry = None
+    if token_data.get("expiry"):
+        expiry = datetime.fromisoformat(token_data["expiry"].replace("Z", "+00:00"))
     creds = Credentials(
         token=token_data.get("token"),
         refresh_token=token_data.get("refresh_token"),
@@ -62,6 +66,7 @@ def get_drive_service():
         client_id=token_data.get("client_id"),
         client_secret=token_data.get("client_secret"),
         scopes=token_data.get("scopes"),
+        expiry=expiry,
     )
     if not creds.valid:
         if creds.expired and creds.refresh_token:

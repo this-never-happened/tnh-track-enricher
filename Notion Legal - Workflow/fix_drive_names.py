@@ -125,12 +125,12 @@ def main():
             continue
 
         try:
-            current = drive.files().get(fileId=file_id, fields="name").execute().get("name", "")
+            current = drive.files().get(fileId=file_id, fields="name", supportsAllDrives=True).execute().get("name", "")
             if current == correct_name:
                 print(f"  ✅ Already correct: {correct_name[:80]}")
                 already_correct += 1
             else:
-                drive.files().update(fileId=file_id, body={"name": correct_name}).execute()
+                drive.files().update(fileId=file_id, body={"name": correct_name}, supportsAllDrives=True).execute()
                 print(f"  ✅ Renamed:")
                 print(f"     From: {current[:80]}")
                 print(f"     To:   {correct_name[:80]}")

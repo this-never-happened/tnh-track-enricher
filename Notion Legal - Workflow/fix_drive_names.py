@@ -6,10 +6,9 @@ TNH-SIDE-NNN contract ID for all records that had duplicates archived.
 Run with: railway run python fix_drive_names.py
 """
 
-import os, re, time, json, base64, requests
+import os, re, time, pickle, base64, requests
 from collections import defaultdict
 
-from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 
@@ -51,18 +50,10 @@ AFFECTED_URLS = [
 ]
 
 def get_drive_service():
-    token_b64 = os.environ.get("SHEETS_TOKEN")
+    token_b64 = os.environ.get("LEGAL_TOKEN")
     if not token_b64:
-        raise RuntimeError("SHEETS_TOKEN not set")
-    token_data = json.loads(base64.b64decode(token_b64).decode())
-    creds = Credentials(
-        token=token_data.get("token"),
-        refresh_token=token_data.get("refresh_token"),
-        token_uri=token_data.get("token_uri"),
-        client_id=token_data.get("client_id"),
-        client_secret=token_data.get("client_secret"),
-        scopes=token_data.get("scopes"),
-    )
+        raise RuntimeError("LEGAL_TOKEN not set")
+    creds = pickle.loads(base64.b64decode(token_b64))
     if not creds.valid:
         if creds.expired and creds.refresh_token:
             creds.refresh(Request())

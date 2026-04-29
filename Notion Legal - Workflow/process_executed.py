@@ -270,9 +270,12 @@ def extract_record_data(record):
 
 # ── NAMING ────────────────────────────────────────────────────────────────────
 
-def build_master_name(master_id_num, main_artist_name, agreement_type):
-    """TNH-MASTER-{id} - {main_artist} - {agreement_type}"""
-    return f"TNH-MASTER-{master_id_num} - {main_artist_name} - {agreement_type}"
+def build_master_name(master_id_num, main_artist_name, agreement_type, track_names=None):
+    """TNH-MASTER-{id} - {main_artist} - {agreement_type} - {track1} / {track2}"""
+    base = f"TNH-MASTER-{master_id_num} - {main_artist_name} - {agreement_type}"
+    if track_names:
+        base += " - " + " / ".join(track_names)
+    return base
 
 def build_side_name(side_id_num, royaltor, track_names, track_ids, agreement_type, master_id_str):
     """TNH-SIDE-{id} - {royaltor} - {track_name} ({track_id}) - {agreement_type} - {master_id}"""
@@ -353,7 +356,7 @@ def get_master_id_str(master_page_id):
 
 # ── BRANCH A: MASTER CONTRACT ─────────────────────────────────────────────────
 
-def create_master_contract(data, main_artist_name, drive_service):
+def create_master_contract(data, main_artist_name, track_names, drive_service):
     """Create a new Master Contract record for licence / exclusive license agreements."""
     print(f"  → Branch: Master Contract")
 
@@ -397,7 +400,7 @@ def create_master_contract(data, main_artist_name, drive_service):
     master_id_num = uid.get("number")
 
     if master_id_num:
-        final_name = build_master_name(master_id_num, main_artist_name, agreement_type)
+        final_name = build_master_name(master_id_num, main_artist_name, agreement_type, track_names)
         # Update the title now we have the ID
         notion_update_page(new_page_id, {
             "master agreement": {
@@ -543,7 +546,7 @@ def process_record(record, drive_service):
     # Route based on agreement type
     if agreement_type_lower in MASTER_TYPES:
         new_page_id, new_page_url, final_name = create_master_contract(
-            data, main_artist_name, drive_service
+            data, main_artist_name, track_names, drive_service
         )
     else:
         new_page_id, new_page_url, final_name = create_side_agreement(

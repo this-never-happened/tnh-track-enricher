@@ -109,6 +109,11 @@ def main():
     fixed = 0
 
     for rec in records:
+        if rec["notion_name"].startswith("[DUPLICATE"):
+            print(f"  ⏭ Skipping duplicate-flagged record: {rec['notion_name'][:80]}")
+            skipped += 1
+            continue
+
         file_id = extract_file_id(rec["url"])
         if not file_id:
             skipped += 1
